@@ -2,23 +2,12 @@
 using System.ComponentModel;
 using System.IO;
 using System.IO.Pipes;
-using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
 
 namespace WpfApp1
 {
-    /// <summary>
-    /// Interaction logic for MainWindow.xaml
-    /// </summary>
     public partial class MainWindow : Window, INotifyPropertyChanged
     {
         private ObservableCollection<TagInfo> _tags = new ObservableCollection<TagInfo>();
@@ -32,36 +21,36 @@ namespace WpfApp1
             }
         }
 
-        private NamedPipeServerStream pipeServer;
+        private NamedPipeClientStream pipeClient;
         private Thread pipeThread;
+        private bool running = true;
 
         public MainWindow()
         {
             InitializeComponent();
             DataContext = this;
-            StartPipeServer();
+            StartPipeClient();
         }
 
-        private void StartPipeServer()
+        private void StartPipeClient()
         {
             pipeThread = new Thread(() =>
             {
                 try
                 {
-                    pipeServer = new NamedPipeServerStream("rfid_pipe", PipeDirection.In);
-                    pipeServer.WaitForConnection();
+                    pipeClient = new NamedPipeClientStream(".", "rfid_multi_pipe", PipeDirection.In);
+                    pipeClient.Connect(5000); // Timeout: 5 seconds
 
-                    using (var reader = new StreamReader(pipeServer))
+                    using (var reader = new StreamReader(pipeClient))
                     {
                         string line;
-                        while ((line = reader.ReadLine()) != null)
+                        while (running && (line = reader.ReadLine()) != null)
                         {
                             try
                             {
                                 var tag = JsonSerializer.Deserialize<TagInfo>(line);
                                 if (tag != null)
                                 {
-                                    // Update UI thread safely
                                     Dispatcher.Invoke(() =>
                                     {
                                         Tags.Add(tag);
@@ -70,37 +59,61 @@ namespace WpfApp1
                             }
                             catch (JsonException ex)
                             {
-                                // handle malformed JSON
                                 Console.WriteLine("JSON error: " + ex.Message);
                             }
                         }
                     }
                 }
+                catch (TimeoutException)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        MessageBox.Show("Could not connect to the RFID pipe server (timeout).");
+                    });
+                }
+                catch (IOException ex)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        MessageBox.Show("Pipe I/O error: " + ex.Message);
+                    });
+                }
                 catch (Exception ex)
                 {
                     Dispatcher.Invoke(() =>
                     {
-                        MessageBox.Show("Pipe server error: " + ex.Message);
+                        MessageBox.Show("Unexpected error: " + ex.Message);
                     });
                 }
             });
+
             pipeThread.IsBackground = true;
             pipeThread.Start();
+        }
+
+        protected override void OnClosing(CancelEventArgs e)
+        {
+            base.OnClosing(e);
+            running = false;
+
+            try
+            {
+                pipeClient?.Dispose();
+            }
+            catch { }
+
+            try
+            {
+                pipeThread?.Join(1000); // Wait up to 1 second
+            }
+            catch { }
         }
 
         public event PropertyChangedEventHandler PropertyChanged;
         protected void OnPropertyChanged(string name)
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
-
-        protected override void OnClosing(CancelEventArgs e)
-        {
-            base.OnClosing(e);
-            try
-            {
-                pipeServer?.Dispose();
-                pipeThread?.Abort();
-            }
-            catch { }
-        }
     }
+
+    // Assuming you have a TagInfo class like this:
+  
 }
